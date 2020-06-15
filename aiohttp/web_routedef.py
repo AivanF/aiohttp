@@ -1,4 +1,5 @@
 import abc
+import itertools
 import os  # noqa
 from typing import (
     TYPE_CHECKING,
@@ -6,6 +7,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Generator,
     Iterator,
     List,
     Optional,
@@ -42,6 +44,10 @@ class AbstractRouteDef(abc.ABC):
     def register(self, router: UrlDispatcher) -> List[AbstractRoute]:
         pass  # pragma: no cover
 
+    @abc.abstractmethod
+    def with_prefix(self, prefix: str) -> 'AbstractRouteDef':
+        pass  # pragma: no cover
+
 
 _SimpleHandler = Callable[[Request], Awaitable[StreamResponse]]
 _HandlerType = Union[Type[AbstractView], _SimpleHandler]
@@ -70,6 +76,10 @@ class RouteDef(AbstractRouteDef):
             return [router.add_route(self.method, self.path, self.handler,
                     **self.kwargs)]
 
+    def with_prefix(self, prefix: str) -> 'RouteDef':
+        return RouteDef(method=self.method, path=prefix + self.path,
+                        handler=self.handler, kwargs=self.kwargs)
+
 
 @attr.s(frozen=True, repr=False, slots=True)
 class StaticDef(AbstractRouteDef):
@@ -84,6 +94,10 @@ class StaticDef(AbstractRouteDef):
         return ("<StaticDef {prefix} -> {path}"
                 "{info}>".format(prefix=self.prefix, path=self.path,
                                  info=''.join(info)))
+
+    def with_prefix(self, prefix: str) -> 'StaticDef':
+        return StaticDef(prefix=prefix + self.prefix,
+                         path=self.path, kwargs=self.kwargs)
 
     def register(self, router: UrlDispatcher) -> List[AbstractRoute]:
         resource = router.add_static(self.prefix, self.path, **self.kwargs)
@@ -142,9 +156,10 @@ class RouteTableDef(Sequence[AbstractRouteDef]):
     """Route definition table"""
     def __init__(self) -> None:
         self._items = []  # type: List[AbstractRouteDef]
+        self._children = {}  # type: Dict[str, RouteTableDef]
 
     def __repr__(self) -> str:
-        return "<RouteTableDef count={}>".format(len(self._items))
+        return "<RouteTableDef count={}>".format(len(self))
 
     @overload
     def __getitem__(self, index: int) -> AbstractRouteDef: ...  # noqa
@@ -153,13 +168,22 @@ class RouteTableDef(Sequence[AbstractRouteDef]):
     def __getitem__(self, index: slice) -> List[AbstractRouteDef]: ...  # noqa
 
     def __getitem__(self, index):  # type: ignore  # noqa
-        return self._items[index]
+        return next(itertools.islice(iter(self), index, index+1))
 
     def __iter__(self) -> Iterator[AbstractRouteDef]:
-        return iter(self._items)
+        def iterator() -> Generator[AbstractRouteDef, None, None]:
+            for item in self._items:
+                yield item
+            for prefix in self._children:
+                child = self._children[prefix]
+                for item in child:
+                    yield item.with_prefix(prefix)
+        return iterator()
 
     def __len__(self) -> int:
-        return len(self._items)
+        children_items_count = sum(
+            len(child) for child in self._children.values())
+        return len(self._items) + children_items_count
 
     def __contains__(self, item: object) -> bool:
         return item in self._items
@@ -200,3 +224,13 @@ class RouteTableDef(Sequence[AbstractRouteDef]):
     def static(self, prefix: str, path: PathLike,
                **kwargs: Any) -> None:
         self._items.append(StaticDef(prefix, path, kwargs))
+
+    def extend(self, prefix: str,
+               child: 'RouteTableDef'=None) -> 'RouteTableDef':
+        if prefix in self._children:
+            raise ValueError(
+                'Child with prefix {!r} is already defined'.format(prefix))
+        if child is None:
+            child = RouteTableDef()
+        self._children[prefix] = child
+        return child
