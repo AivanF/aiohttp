@@ -279,6 +279,33 @@ def test_routedef_sequence_protocol() -> None:
     assert list(routes)[0] is info
 
 
+def test_routedef_prefix_sequence_protocol() -> None:
+    api_routes = web.RouteTableDef()
+    api_v1_routes = api_routes.extend('/v1')
+
+    @api_v1_routes.route('OTHER', '/path')
+    async def handler(request):
+        pass
+
+    api_v1_routes.static('/prefix', '/path', name='name')
+
+    info = api_v1_routes[0]
+
+    assert len(api_v1_routes) == 2
+    assert len(api_v1_routes) == len(list(api_routes))
+    assert info in api_v1_routes
+
+    basic_routes = web.RouteTableDef()
+    basic_routes.extend('/api', api_routes)
+
+    with pytest.raises(ValueError):
+        basic_routes.extend('/api')
+
+    assert len(basic_routes) == len(api_routes)
+    assert info not in basic_routes
+    assert basic_routes[0].handler == info.handler
+
+
 def test_repr_route_def() -> None:
     routes = web.RouteTableDef()
 
